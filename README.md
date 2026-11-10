@@ -2,15 +2,24 @@
 
 Python + PyQt6 PCB 传输线损耗研究工具。当前为 **2L 特征值算法原型**，尚未与 Intel Delta-L 4.0 规范或 Keysight PLTS 标杆数据比对，不应标称符合 Delta-L 4.0。
 
-## 启动
+## 使用 uv 管理与启动
+
+安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后在项目根目录执行：
 
 ```bash
-python -m pip install -e '.[test]'
-pcb-delta-l
-python -m pytest -q
+uv sync --locked
+uv run --locked pcb-delta-l
 ```
 
-Windows PowerShell 也可执行 `python -m pcb_delta_l.gui`。从项目根目录运行。
+`uv sync` 创建项目专用的 `.venv` 并根据 `uv.lock` 安装依赖；默认也安装开发依赖。也可使用 `uv run --locked python -m pcb_delta_l.gui`。Python 版本要求为 3.10 或更新版本。
+
+运行测试：
+
+```bash
+uv run --locked pytest -q
+```
+
+增加依赖使用 `uv add 包名`，开发依赖使用 `uv add --dev 包名`；更新依赖后将 `pyproject.toml` 与 `uv.lock` 一同提交。仅安装运行依赖可使用 `uv sync --locked --no-dev`。
 
 ## 功能
 
