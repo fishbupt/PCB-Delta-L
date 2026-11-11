@@ -10,6 +10,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolb
 from matplotlib.figure import Figure
 from .core import extract_2l
 from .simulation import generate
+from .touchstone import write_s4p, length_filename, MAX_PLTS_POINTS
 
 class Worker(QThread):
     success=pyqtSignal(object); failure=pyqtSignal(str)
@@ -40,7 +41,7 @@ class Window(QMainWindow):
         b=QPushButton(text); b.clicked.connect(slot); box.addWidget(b); return b
     def sim_page(self):
         s,box,self.simplot=self.split(); self.tabs.addTab(s,'仿真测试件'); form=QFormLayout(); box.addLayout(form)
-        self.start=self.number(.01,.001,1000); self.stop=self.number(40,.002,1000); self.points=QSpinBox(); self.points.setRange(2,100001); self.points.setValue(1601)
+        self.start=self.number(.01,.001,1000); self.stop=self.number(40,.002,1000); self.points=QSpinBox(); self.points.setRange(2,MAX_PLTS_POINTS); self.points.setValue(1601)
         self.lengths=QLineEdit('2, 5, 10'); self.z=self.number(95,1,1000); self.er=self.number(3.5,.1,30); self.skin=self.number(.08,0,100,5); self.diel=self.number(.035,0,100,5); self.fz=self.number(85,1,1000); self.fl=self.number(.15,0,10)
         for label,w in [('起始频率 (GHz)',self.start),('终止频率 (GHz)',self.stop),('频点数',self.points),('线长 (in，逗号分隔)',self.lengths),('差模线阻抗 (Ω)',self.z),('有效介电常数',self.er),('集肤损耗系数',self.skin),('介质损耗系数',self.diel),('引入结构阻抗 (Ω)',self.fz),('单端引入长度 (in)',self.fl)]: form.addRow(label,w)
         note=QLabel('仿真使用均匀传输线和相同引入结构，默认无模式转换。'); note.setWordWrap(True); box.addWidget(note)
@@ -84,7 +85,7 @@ class Window(QMainWindow):
         if not folder or self.sim is None:return
         nets,truth=self.sim
         try:
-            for length,net in nets.items(): net.write_touchstone(str(Path(folder)/f'line_{length:g}in'))
+            for length,net in nets.items(): write_s4p(Path(folder)/length_filename(length), net)
             np.savetxt(Path(folder)/'truth.csv',np.column_stack((next(iter(nets.values())).f,truth)),delimiter=',',header='frequency_hz,loss_db_per_in',comments='')
             self.statusBar().showMessage('仿真 S4P 与真值已导出')
         except Exception as e: QMessageBox.warning(self,'导出失败',str(e))
