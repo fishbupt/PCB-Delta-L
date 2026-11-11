@@ -5,10 +5,11 @@ from pathlib import Path
 import numpy as np
 import skrf as rf
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QPushButton,QLineEdit,QDoubleSpinBox,QSpinBox,QFileDialog,QMessageBox,QTabWidget,QSplitter,QScrollArea,QPlainTextEdit)
+from PyQt6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QPushButton,QLineEdit,QDoubleSpinBox,QSpinBox,QFileDialog,QMessageBox,QTabWidget,QSplitter,QScrollArea,QPlainTextEdit,QComboBox)
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from .core import extract_2l
+from .fitting import fit_loss
 from .simulation import generate
 from .touchstone import write_s4p, length_filename, MAX_PLTS_POINTS
 
@@ -26,6 +27,14 @@ class Plot(QWidget):
         self.fig.clear(); ax=self.fig.subplots();
         for y,label,style in curves: ax.plot(f/1e9,y,style,label=label,linewidth=1.5)
         ax.set_xlabel('Frequency (GHz)'); ax.set_ylabel(ylabel); ax.grid(True,color='#e7ecf3'); ax.legend(); self.canvas.draw_idle()
+
+    def draw_result(self, raw, fit):
+        self.fig.clear(); ax=self.fig.subplots(); other=ax.twinx(); f=raw.frequency_hz/1e9
+        a,=ax.plot(f,raw.loss_db_per_in,color='#2563eb',label='Eigen Value (raw)')
+        b,=ax.plot(f,fit.fitted_db_per_in,color='#dc2626',label='Curve Fitted')
+        c,=other.plot(f,fit.residual_percent,color='#d97706',linestyle='--',label='Relative residual (proxy, %)')
+        ax.set_xlabel('Frequency (GHz)'); ax.set_ylabel('Loss (dB/in)'); other.set_ylabel('Relative residual (%)')
+        ax.grid(True,color='#e7ecf3'); ax.legend(handles=[a,b,c],loc='best'); self.canvas.draw_idle()
 
 class Window(QMainWindow):
     def __init__(self):
@@ -56,10 +65,13 @@ class Window(QMainWindow):
             row=QWidget(); h=QHBoxLayout(row); h.setContentsMargins(0,0,0,0); h.addWidget(field); b=QPushButton('选择'); b.clicked.connect(lambda _,w=field:self.browse(w)); h.addWidget(b); f.addRow(label,row)
         self.ls=self.number(2,0,10000); self.ll=self.number(5,0,10000); self.ports=QLineEdit('1,2,3,4')
         f.addRow('短线长度 (in)',self.ls); f.addRow('长线长度 (in)',self.ll); f.addRow('端口：输入+、输出+、输入−、输出−',self.ports)
-        note=QLabel('频率网格须一致。输出原始特征值损耗；物理拟合和不确定度尚待 PLTS 数据验证。'); note.setWordWrap(True); box.addWidget(note)
+        self.cutoff=self.number(0,0,1000); self.cutoff.setSpecialValueText('全频段'); self.weight=QComboBox(); self.weight.addItem('0 · 均匀权重',0); self.weight.addItem('3 · 低频加权',3)
+        f.addRow('拟合截止频率 (GHz)',self.cutoff); f.addRow('拟合权重阶数',self.weight)
+        note=QLabel('频率网格须一致。百分比为相对拟合残差估算，并非 PLTS 不确定度；拟合和估算均待标杆验证。'); note.setWordWrap(True); box.addWidget(note)
         self.button('计算 2L',self.run_calc,box); self.export=self.button('导出计算结果 CSV',self.save_result,box); self.export.setEnabled(False); box.addStretch()
         for w in (self.short,self.long,self.ports): w.textChanged.connect(self.invalidate)
-        for w in (self.ls,self.ll): w.valueChanged.connect(self.invalidate)
+        for w in (self.ls,self.ll,self.cutoff): w.valueChanged.connect(self.invalidate)
+        self.weight.currentIndexChanged.connect(self.invalidate)
     def invalidate(self,*_): self.result=None; self.export.setEnabled(False); self.plot.fig.clear(); self.plot.canvas.draw_idle()
     def browse(self,field):
         p,_=QFileDialog.getOpenFileName(self,'选择 Touchstone 文件','','Touchstone (*.s2p *.s4p)');
@@ -93,21 +105,28 @@ class Window(QMainWindow):
         try:
             paths=(self.short.text().strip(),self.long.text().strip()); ports=tuple(int(x.strip()) for x in self.ports.text().split(',')); ls=self.ls.value(); ll=self.ll.value()
             if not all(paths): raise ValueError('请选择长线和短线文件')
+            cutoff=self.cutoff.value()*1e9 or None; weight=self.weight.currentData()
         except ValueError as e: QMessageBox.warning(self,'输入错误',str(e)); return
         self.invalidate()
-        def work(): return extract_2l(rf.Network(paths[0]),rf.Network(paths[1]),ls,ll,ports)
-        def done(r):
-            self.result=r; self.export.setEnabled(True); self.plot.draw(r.frequency_hz,[(r.loss_db_per_in,'Eigenvalue raw','b-')],'Loss (dB/in)'); self.statusBar().showMessage(f'计算完成：有效频点 {sum(r.valid)}/{len(r.valid)}'); self.log.appendPlainText(f'2L 完成：有效 {sum(r.valid)}/{len(r.valid)}；结果未经过 PLTS 验证')
+        def work():
+            raw=extract_2l(rf.Network(paths[0]),rf.Network(paths[1]),ls,ll,ports)
+            fit=fit_loss(raw.frequency_hz,raw.loss_db_per_in,raw.valid,cutoff,weight)
+            return raw,fit
+        def done(data):
+            raw,fit=data; self.result=data; self.export.setEnabled(True); self.plot.draw_result(raw,fit)
+            self.statusBar().showMessage(f'有效频点 {sum(raw.valid)}/{len(raw.valid)}；拟合 RMS {fit.rms_db_per_in:.4g} dB/in')
+            self.log.appendPlainText(f'2L 完成；拟合系数 (a,b,c,d,offset)={fit.coefficients}，权重阶数={fit.weight_order}；百分比为相对拟合残差，不是已验证的 PLTS 不确定度')
         self.launch(work,done)
     def save_result(self):
         if self.result is None:return
         p,_=QFileDialog.getSaveFileName(self,'导出结果','delta_l.csv','CSV (*.csv)')
         if not p:return
-        r=self.result
+        r,fit=self.result
         try:
             with open(p,'w',newline='',encoding='utf-8-sig') as fh:
-                w=csv.writer(fh); w.writerow(['frequency_hz','loss_db_per_in','eigenvalue_1_real','eigenvalue_1_imag','eigenvalue_2_real','eigenvalue_2_imag','short_abcd_condition','valid'])
-                for f,l,e,c,v in zip(r.frequency_hz,r.loss_db_per_in,r.eigenvalues,r.condition,r.valid):w.writerow([f,l,e[0].real,e[0].imag,e[1].real,e[1].imag,c,int(v)])
+                w=csv.writer(fh); w.writerow(['frequency_hz','eigenvalue_loss_db_per_in','curve_fitted_db_per_in','relative_fit_residual_proxy_percent','in_fit_range','eigenvalue_1_real','eigenvalue_1_imag','eigenvalue_2_real','eigenvalue_2_imag','short_abcd_condition','valid','fit_f0_hz','fit_fmax_hz','fit_a','fit_b','fit_c','fit_d','fit_offset','fit_weight_order','fit_rms_db_per_in'])
+                for f,l,fitval,pct,inside,e,c,v in zip(r.frequency_hz,r.loss_db_per_in,fit.fitted_db_per_in,fit.residual_percent,fit.in_fit_range,r.eigenvalues,r.condition,r.valid):
+                    w.writerow([f,l,fitval,pct,int(inside),e[0].real,e[0].imag,e[1].real,e[1].imag,c,int(v),fit.f0_hz,fit.fmax_hz,*fit.coefficients,fit.weight_order,fit.rms_db_per_in])
             self.statusBar().showMessage('结果已导出')
         except OSError as e: QMessageBox.warning(self,'导出失败',str(e))
     def closeEvent(self,e):
