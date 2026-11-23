@@ -8,6 +8,15 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,QPushButton,QLineEdit,QDoubleSpinBox,QSpinBox,QFileDialog,QMessageBox,QTabWidget,QSplitter,QScrollArea,QPlainTextEdit,QComboBox)
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
+from matplotlib import rcParams, font_manager
+
+# Matplotlib does not inherit the Qt application font. Pick an installed CJK
+# font explicitly so Chinese plot titles work on Windows, macOS, and Linux.
+_CJK_FONTS = ("Microsoft YaHei", "SimHei", "PingFang SC", "Heiti SC",
+              "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Arial Unicode MS")
+_installed_fonts = {font.name for font in font_manager.fontManager.ttflist}
+rcParams["font.sans-serif"] = [name for name in _CJK_FONTS if name in _installed_fonts] + rcParams["font.sans-serif"]
+rcParams["axes.unicode_minus"] = False
 from .core import extract_2l
 from .fitting import fit_loss
 from .simulation import generate
