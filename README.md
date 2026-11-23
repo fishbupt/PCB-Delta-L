@@ -44,3 +44,7 @@ uv run --locked pytest -q
 “Delta-L 结果比较”页面支持载入两个 PLTS 格式或旧版程序结果 CSV，也可将参考 CSV 与当前计算结果比较。选择每个 PLTS 格式文件第一列实际的频率单位；旧版程序 CSV 的 `frequency_hz` 固定为 Hz。页面在 A 的频点上对 B 作线性插值，仅在有效数据段内计算 `B − A`，不外推，并显示最大绝对差及 RMS。
 
 计算结果现在以 PLTS 四列 CSV 格式导出：`Time(ns), Eigen Value(Delta-L), Curve Fitted(Delta-L), Uncertainty(%)(Delta-L)`。为匹配所提供的 PLTS 示例而保留原始表头；**第一列的实际数值为 MHz，第四列是本程序的相对拟合残差代理指标，不是经过验证的 PLTS Uncertainty**。拟合区间外或无效值以空字段表示，不填零。
+
+### 混模 S 参数查看与导出
+
+在“混模 S 参数”页加载一个或两个四端口 Touchstone 文件，每个文件显示 SDD11/12/21/22 和 SCC11/12/21/22。端口输入依次为输入正、输出正、输入负、输出负，默认 `1,2,3,4`，即差分对 (1,3)/(2,4)。可逐条保存，或批量导出为 A_/B_ 前缀的 8 或 16 个 CSV 文件；每个文件的列名与 PLTS 单曲线导出一致，例如 `Frequency(MHz),SDD11(Log Mag)`。零幅值以 `-inf` 表示。

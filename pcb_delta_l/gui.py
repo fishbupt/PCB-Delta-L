@@ -22,6 +22,7 @@ from .fitting import fit_loss
 from .simulation import generate
 from .touchstone import write_s4p, length_filename, MAX_PLTS_POINTS
 from .comparison import DeltaLData, read_delta_l, write_plts, align
+from .mixed_mode import curves as mixed_curves, write_curve, PARAMETERS
 
 class Worker(QThread):
     success=pyqtSignal(object); failure=pyqtSignal(str)
@@ -51,7 +52,7 @@ class Window(QMainWindow):
         super().__init__(); self.setWindowTitle('PCB Delta-L Workbench'); self.resize(1400,850); self.worker=None; self.result=None; self.sim=None
         root=QWidget(); self.setCentralWidget(root); outer=QVBoxLayout(root); title=QLabel('PCB Delta-L 工作台'); title.setStyleSheet('font-size:20px;font-weight:600'); outer.addWidget(title)
         self.tabs=QTabWidget(); outer.addWidget(self.tabs,1); self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(85); outer.addWidget(self.log); self.statusBar().showMessage('就绪 · 2L 特征值研究版，尚未与 PLTS 验证')
-        self.sim_page(); self.calc_page(); self.compare_page()
+        self.sim_page(); self.calc_page(); self.compare_page(); self.mixed_page()
     def split(self):
         s=QSplitter(); panel=QWidget(); form=QVBoxLayout(panel); scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(panel); scroll.setMinimumWidth(315); plot=Plot(); s.addWidget(scroll); s.addWidget(plot); s.setSizes([360,1000]); return s,form,plot
     def number(self, value, lo, hi, decimals=3):
@@ -185,6 +186,69 @@ class Window(QMainWindow):
             else: lines.append(f'{label}: 无有效重叠点')
         axes[0,0].set_title('曲线叠加'); axes[0,1].set_title('差值 B − A')
         self.compare_plot.canvas.draw_idle(); self.compare_summary.setPlainText('\n'.join(lines)); self.statusBar().showMessage('比较完成；百分比指标定义可能不同')
+    def mixed_page(self):
+        panel,box,self.mixed_plot=self.split(); self.tabs.addTab(panel,'混模 S 参数')
+        self.mixed_files=[]; self.mixed_data=None
+        form=QFormLayout(); box.addLayout(form)
+        for label in ('文件 A','文件 B'):
+            row=QWidget(); h=QHBoxLayout(row); h.setContentsMargins(0,0,0,0); field=QLineEdit(); h.addWidget(field)
+            button=QPushButton('选择'); button.clicked.connect(lambda checked,w=field:self.browse(w)); h.addWidget(button)
+            form.addRow(label,row); self.mixed_files.append(field); field.textChanged.connect(self.clear_mixed)
+        self.mixed_ports=QLineEdit('1,2,3,4'); self.mixed_ports.textChanged.connect(self.clear_mixed)
+        form.addRow('端口：输入+、输出+、输入−、输出−',self.mixed_ports)
+        note=QLabel('每个四端口文件显示 SDD 和 SCC 各 4 条曲线。文件 B 可选；两文件共 16 条。')
+        note.setWordWrap(True); box.addWidget(note)
+        self.button('加载并显示',self.load_mixed,box)
+        self.mixed_object=QComboBox(); self.mixed_object.addItems(['文件 A','文件 B']); self.mixed_parameter=QComboBox(); self.mixed_parameter.addItems(PARAMETERS)
+        form2=QFormLayout(); form2.addRow('导出对象',self.mixed_object); form2.addRow('导出曲线',self.mixed_parameter); box.addLayout(form2)
+        self.mixed_save=self.button('保存当前曲线 CSV',self.save_mixed_curve,box)
+        self.mixed_save_all=self.button('批量保存全部曲线 CSV',self.save_all_mixed,box)
+        self.mixed_save.setEnabled(False); self.mixed_save_all.setEnabled(False); box.addStretch()
+    def clear_mixed(self,*args):
+        self.mixed_data=None
+        if hasattr(self,'mixed_save'): self.mixed_save.setEnabled(False); self.mixed_save_all.setEnabled(False)
+        if hasattr(self,'mixed_plot'): self.mixed_plot.fig.clear(); self.mixed_plot.canvas.draw_idle()
+    def load_mixed(self):
+        try:
+            paths=[w.text().strip() for w in self.mixed_files]; ports=tuple(int(x.strip()) for x in self.mixed_ports.text().split(','))
+            if not paths[0]: raise ValueError('请选择文件 A')
+            datasets=[]
+            for path in paths:
+                if not path: datasets.append(None); continue
+                net=rf.Network(path); datasets.append((net.f.copy(),mixed_curves(net,ports),path))
+            self.mixed_data=datasets; self.mixed_save.setEnabled(True); self.mixed_save_all.setEnabled(True)
+            fig=self.mixed_plot.fig; fig.clear(); axes=fig.subplots(4,4 if datasets[1] is not None else 2, squeeze=False)
+            order=('SDD11','SDD21','SDD12','SDD22','SCC11','SCC21','SCC12','SCC22')
+            for k,data in enumerate(datasets):
+                if data is None: continue
+                f,items,path=data
+                for idx,name in enumerate(order):
+                    ax=axes[idx//2,k*2+idx%2]; ax.plot(f/1e9,items[name],color='#2563eb',linewidth=1)
+                    ax.set_title(f'{chr(65+k)} · {name}',fontsize=9); ax.grid(True,color='#e7ecf3'); ax.set_ylabel('dB',fontsize=8)
+                    if idx//2==3: ax.set_xlabel('GHz',fontsize=8)
+                    ax.tick_params(labelsize=7)
+            self.mixed_plot.canvas.draw_idle(); self.statusBar().showMessage('混模曲线已加载')
+        except (OSError,ValueError) as e: self.clear_mixed(); QMessageBox.warning(self,'加载失败',str(e))
+    def save_mixed_curve(self):
+        if self.mixed_data is None: return
+        idx=self.mixed_object.currentIndex(); data=self.mixed_data[idx]
+        if data is None: QMessageBox.warning(self,'导出失败','请先选择并加载文件 B'); return
+        name=self.mixed_parameter.currentText(); p,_=QFileDialog.getSaveFileName(self,'保存当前曲线',name+'.csv','CSV (*.csv)')
+        if not p: return
+        try: write_curve(p,data[0],name,data[1][name]); self.statusBar().showMessage(f'{name} 已保存')
+        except OSError as e: QMessageBox.warning(self,'导出失败',str(e))
+    def save_all_mixed(self):
+        if self.mixed_data is None: return
+        folder=QFileDialog.getExistingDirectory(self,'选择曲线导出目录')
+        if not folder: return
+        paths=[Path(folder)/(f'{chr(65+i)}_{name}.csv') for i,data in enumerate(self.mixed_data) if data is not None for name in PARAMETERS]
+        if any(p.exists() for p in paths) and QMessageBox.question(self,'文件已存在','目标目录包含同名曲线文件，是否覆盖？') != QMessageBox.StandardButton.Yes: return
+        try:
+            for i,data in enumerate(self.mixed_data):
+                if data is not None:
+                    for name in PARAMETERS: write_curve(Path(folder)/f'{chr(65+i)}_{name}.csv',data[0],name,data[1][name])
+            self.statusBar().showMessage(f'已保存 {len(paths)} 条混模曲线')
+        except OSError as e: QMessageBox.warning(self,'导出失败',str(e))
     def closeEvent(self,e):
         if self.worker and self.worker.isRunning(): QMessageBox.information(self,'请稍候','计算完成后可以关闭窗口。'); e.ignore()
         else:e.accept()
