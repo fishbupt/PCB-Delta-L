@@ -12,6 +12,7 @@ from .core import extract_2l
 from .fitting import fit_loss
 from .simulation import generate
 from .touchstone import write_s4p, length_filename, MAX_PLTS_POINTS
+from .comparison import DeltaLData, read_delta_l, write_plts, align
 
 class Worker(QThread):
     success=pyqtSignal(object); failure=pyqtSignal(str)
@@ -41,7 +42,7 @@ class Window(QMainWindow):
         super().__init__(); self.setWindowTitle('PCB Delta-L Workbench'); self.resize(1400,850); self.worker=None; self.result=None; self.sim=None
         root=QWidget(); self.setCentralWidget(root); outer=QVBoxLayout(root); title=QLabel('PCB Delta-L 工作台'); title.setStyleSheet('font-size:20px;font-weight:600'); outer.addWidget(title)
         self.tabs=QTabWidget(); outer.addWidget(self.tabs,1); self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(85); outer.addWidget(self.log); self.statusBar().showMessage('就绪 · 2L 特征值研究版，尚未与 PLTS 验证')
-        self.sim_page(); self.calc_page()
+        self.sim_page(); self.calc_page(); self.compare_page()
     def split(self):
         s=QSplitter(); panel=QWidget(); form=QVBoxLayout(panel); scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(panel); scroll.setMinimumWidth(315); plot=Plot(); s.addWidget(scroll); s.addWidget(plot); s.setSizes([360,1000]); return s,form,plot
     def number(self, value, lo, hi, decimals=3):
@@ -123,12 +124,58 @@ class Window(QMainWindow):
         if not p:return
         r,fit=self.result
         try:
-            with open(p,'w',newline='',encoding='utf-8-sig') as fh:
-                w=csv.writer(fh); w.writerow(['frequency_hz','eigenvalue_loss_db_per_in','curve_fitted_db_per_in','relative_fit_residual_proxy_percent','in_fit_range','eigenvalue_1_real','eigenvalue_1_imag','eigenvalue_2_real','eigenvalue_2_imag','short_abcd_condition','valid','fit_f0_hz','fit_fmax_hz','fit_a','fit_b','fit_c','fit_d','fit_offset','fit_weight_order','fit_rms_db_per_in'])
-                for f,l,fitval,pct,inside,e,c,v in zip(r.frequency_hz,r.loss_db_per_in,fit.fitted_db_per_in,fit.residual_percent,fit.in_fit_range,r.eigenvalues,r.condition,r.valid):
-                    w.writerow([f,l,fitval,pct,int(inside),e[0].real,e[0].imag,e[1].real,e[1].imag,c,int(v),fit.f0_hz,fit.fmax_hz,*fit.coefficients,fit.weight_order,fit.rms_db_per_in])
-            self.statusBar().showMessage('结果已导出')
+            write_plts(p, r, fit)
+            self.statusBar().showMessage('结果已按 PLTS CSV 列格式导出；横轴数值为 MHz，百分比为拟合残差')
         except OSError as e: QMessageBox.warning(self,'导出失败',str(e))
+
+    def compare_page(self):
+        panel,box,self.compare_plot=self.split(); self.tabs.addTab(panel,'Delta-L 结果比较')
+        self.compare_paths=[]; self.compare_units=[]
+        for name in ('参考 A','对比 B'):
+            box.addWidget(QLabel(name))
+            row=QHBoxLayout(); field=QLineEdit(); field.setPlaceholderText('选择 PLTS 或程序结果 CSV'); row.addWidget(field)
+            button=QPushButton('选择'); button.clicked.connect(lambda checked, w=field:self.browse_csv(w)); row.addWidget(button); box.addLayout(row)
+            unit=QComboBox(); unit.addItems(['MHz','GHz','kHz','Hz']); unit.setToolTip('PLTS 风格 CSV 第一列的实际频率单位；旧版程序 CSV 自动使用 Hz')
+            form=QFormLayout(); form.addRow('横轴频率单位',unit); box.addLayout(form)
+            self.compare_paths.append(field); self.compare_units.append(unit)
+        note=QLabel('按参考 A 的频点比较，B 在线性插值后相减（B − A），不外推。PLTS 表头 Time(ns) 的真实单位请根据数据确认。程序导出百分比为拟合残差，不等同 PLTS Uncertainty。')
+        note.setWordWrap(True); box.addWidget(note)
+        self.button('比较两个 CSV',self.run_compare,box)
+        self.button('比较参考 A 与当前计算结果',self.compare_current,box)
+        self.compare_summary=QPlainTextEdit(); self.compare_summary.setReadOnly(True); self.compare_summary.setMinimumHeight(155); box.addWidget(self.compare_summary); box.addStretch()
+    def browse_csv(self,field):
+        p,_=QFileDialog.getOpenFileName(self,'选择 Delta-L 结果 CSV','','CSV (*.csv);;所有文件 (*)')
+        if p: field.setText(p)
+    def run_compare(self):
+        try:
+            a=read_delta_l(self.compare_paths[0].text().strip(),self.compare_units[0].currentText())
+            b=read_delta_l(self.compare_paths[1].text().strip(),self.compare_units[1].currentText())
+            self.show_comparison(a,b)
+        except (OSError, ValueError) as e: QMessageBox.warning(self,'比较失败',str(e))
+    def compare_current(self):
+        try:
+            if self.result is None: raise ValueError('请先在 Delta-L 计算页面完成计算')
+            a=read_delta_l(self.compare_paths[0].text().strip(),self.compare_units[0].currentText())
+            raw,fit=self.result
+            b=DeltaLData(raw.frequency_hz,np.column_stack((raw.loss_db_per_in,fit.fitted_db_per_in,fit.residual_percent)))
+            self.show_comparison(a,b)
+        except (OSError, ValueError) as e: QMessageBox.warning(self,'比较失败',str(e))
+    def show_comparison(self,a,b):
+        aligned=align(a,b); delta=aligned-a.values
+        if not np.any(np.isfinite(delta)): raise ValueError('两个结果没有可比较的有效频点，请检查频率单位和数据')
+        fig=self.compare_plot.fig; fig.clear(); axes=fig.subplots(3,2); labels=['Eigen Value (dB/in)','Curve Fitted (dB/in)','Percent (%)']
+        lines=[]
+        for i,label in enumerate(labels):
+            f=a.frequency_hz/1e9; valid=np.isfinite(delta[:,i]); ax=axes[i,0]; diff=axes[i,1]
+            ax.plot(f,a.values[:,i],label='A',color='#2563eb'); ax.plot(f,aligned[:,i],label='B',color='#e11d48',alpha=.8); ax.set_ylabel(label); ax.legend(loc='best')
+            diff.plot(f,delta[:,i],color='#7c3aed'); diff.axhline(0,color='#94a3b8',linewidth=.8); diff.set_ylabel('B − A')
+            for x in (ax,diff): x.grid(True,color='#e7ecf3'); x.set_xlabel('Frequency (GHz)')
+            if np.any(valid):
+                d=delta[valid,i]; idx=np.flatnonzero(valid)[np.argmax(np.abs(d))]
+                lines.append(f'{label}: N={len(d)}, 最大绝对差={np.max(np.abs(d)):.6g}，RMS={np.sqrt(np.mean(d*d)):.6g}，最大差频率={f[idx]:.6g} GHz')
+            else: lines.append(f'{label}: 无有效重叠点')
+        axes[0,0].set_title('曲线叠加'); axes[0,1].set_title('差值 B − A')
+        self.compare_plot.canvas.draw_idle(); self.compare_summary.setPlainText('\n'.join(lines)); self.statusBar().showMessage('比较完成；百分比指标定义可能不同')
     def closeEvent(self,e):
         if self.worker and self.worker.isRunning(): QMessageBox.information(self,'请稍候','计算完成后可以关闭窗口。'); e.ignore()
         else:e.accept()

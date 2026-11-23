@@ -38,3 +38,9 @@ uv run --locked pytest -q
 拟合参考 [Delta-L 资料中的拟合函数](https://www.packetmicro.com/documents/Delta-L_Measurement_Analysis_DesignCon_2025.pdf)：`y = a*x^b + c*x^2 + d*x + offset`，其中 `x=(f-f0)/(fmax-f0)`、`f0` 和 `fmax` 是拟合区间首末有效频点，`b` 限制在 0.2–0.95，其余参数不约束。该指数范围和优化细节为当前实现的工程选择，未确认与 PLTS 一致。可设置截止频率以及权重阶数 0（均匀）或 3（W=(1-x)^3，W 作用于平方残差）。拟合需要至少 8 个有效数据点，拟合区间外不外推。
 
 右轴百分比是 **相对拟合残差代理指标**：`100 * abs(raw - fit) / abs(fit)`；拟合结果接近零或输入无效时显示空值。**这不是经过验证的 Intel/PLTS Uncertainty 公式，也不是计量不确定度**，请勿用于合格判定或报告为实际测量不确定度。获得 PLTS 导出数据与算法定义后可逐项对比及修正。CSV 同时导出三条曲线、有效标志、拟合系数、频带、权重与 RMS；拟合系数使用归一化频率，不能直接当作 GHz 单位的系数。
+
+### Delta-L 结果比较
+
+“Delta-L 结果比较”页面支持载入两个 PLTS 格式或旧版程序结果 CSV，也可将参考 CSV 与当前计算结果比较。选择每个 PLTS 格式文件第一列实际的频率单位；旧版程序 CSV 的 `frequency_hz` 固定为 Hz。页面在 A 的频点上对 B 作线性插值，仅在有效数据段内计算 `B − A`，不外推，并显示最大绝对差及 RMS。
+
+计算结果现在以 PLTS 四列 CSV 格式导出：`Time(ns), Eigen Value(Delta-L), Curve Fitted(Delta-L), Uncertainty(%)(Delta-L)`。为匹配所提供的 PLTS 示例而保留原始表头；**第一列的实际数值为 MHz，第四列是本程序的相对拟合残差代理指标，不是经过验证的 PLTS Uncertainty**。拟合区间外或无效值以空字段表示，不填零。
