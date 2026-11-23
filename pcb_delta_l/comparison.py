@@ -46,8 +46,8 @@ def write_plts(path, raw, fit):
     with open(path, 'w', newline='', encoding='utf-8-sig') as fh:
         writer = csv.writer(fh, lineterminator='\n')
         writer.writerow(PLTS_HEADER)
-        for f, eigen, fitted, residual in zip(raw.frequency_hz, raw.loss_db_per_in, fit.fitted_db_per_in, fit.residual_percent):
-            writer.writerow([format(x, '.15f') if np.isfinite(x) else '' for x in (f / 1e6, eigen, fitted, residual)])
+        for f, eigen, fitted, uncertainty in zip(raw.frequency_hz, fit.displayed_loss_db_per_in, fit.fitted_db_per_in, fit.uncertainty_percent):
+            writer.writerow([format(x, '.15f') if np.isfinite(x) else '' for x in (f / 1e6, eigen, fitted, uncertainty)])
 
 
 def align(reference, candidate):

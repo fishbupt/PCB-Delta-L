@@ -41,17 +41,17 @@ class Plot(QWidget):
 
     def draw_result(self, raw, fit):
         self.fig.clear(); ax=self.fig.subplots(); other=ax.twinx(); f=raw.frequency_hz/1e9
-        a,=ax.plot(f,raw.loss_db_per_in,color='#2563eb',label='Eigen Value (raw)')
+        a,=ax.plot(f,fit.displayed_loss_db_per_in,color='#2563eb',label='Eigen Value')
         b,=ax.plot(f,fit.fitted_db_per_in,color='#dc2626',label='Curve Fitted')
-        c,=other.plot(f,fit.residual_percent,color='#d97706',linestyle='--',label='Relative residual (proxy, %)')
-        ax.set_xlabel('Frequency (GHz)'); ax.set_ylabel('Loss (dB/in)'); other.set_ylabel('Relative residual (%)')
+        c,=other.plot(f,fit.uncertainty_percent,color='#d97706',linestyle='--',label='Uncertainty (%)')
+        ax.set_xlabel('Frequency (GHz)'); ax.set_ylabel('Loss (dB/in)'); other.set_ylabel('Uncertainty (%)')
         ax.grid(True,color='#e7ecf3'); ax.legend(handles=[a,b,c],loc='best'); self.canvas.draw_idle()
 
 class Window(QMainWindow):
     def __init__(self):
         super().__init__(); self.setWindowTitle('PCB Delta-L Workbench'); self.resize(1400,850); self.worker=None; self.result=None; self.sim=None
         root=QWidget(); self.setCentralWidget(root); outer=QVBoxLayout(root); title=QLabel('PCB Delta-L 工作台'); title.setStyleSheet('font-size:20px;font-weight:600'); outer.addWidget(title)
-        self.tabs=QTabWidget(); outer.addWidget(self.tabs,1); self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(85); outer.addWidget(self.log); self.statusBar().showMessage('就绪 · 2L 特征值研究版，尚未与 PLTS 验证')
+        self.tabs=QTabWidget(); outer.addWidget(self.tabs,1); self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(85); outer.addWidget(self.log); self.statusBar().showMessage('就绪 · Delta-L 2L')
         self.sim_page(); self.calc_page(); self.compare_page(); self.mixed_page()
     def split(self):
         s=QSplitter(); panel=QWidget(); form=QVBoxLayout(panel); scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(panel); scroll.setMinimumWidth(315); plot=Plot(); s.addWidget(scroll); s.addWidget(plot); s.setSizes([360,1000]); return s,form,plot
@@ -78,7 +78,7 @@ class Window(QMainWindow):
         f.addRow('短线长度 (in)',self.ls); f.addRow('长线长度 (in)',self.ll); f.addRow('端口：输入+、输出+、输入−、输出−',self.ports)
         self.cutoff=self.number(0,0,1000); self.cutoff.setSpecialValueText('全频段'); self.weight=QComboBox(); self.weight.addItem('0 · 均匀权重',0); self.weight.addItem('3 · 低频加权',3)
         f.addRow('拟合截止频率 (GHz)',self.cutoff); f.addRow('拟合权重阶数',self.weight)
-        note=QLabel('频率网格须一致。百分比为相对拟合残差估算，并非 PLTS 不确定度；拟合和估算均待标杆验证。'); note.setWordWrap(True); box.addWidget(note)
+        note=QLabel('频率网格须一致。Uncertainty 使用 ±1 GHz 残差窗口。频带边缘缺少完整窗口时显示 0。'); note.setWordWrap(True); box.addWidget(note)
         self.button('计算 2L',self.run_calc,box); self.export=self.button('导出计算结果 CSV',self.save_result,box); self.export.setEnabled(False); box.addStretch()
         for w in (self.short,self.long,self.ports): w.textChanged.connect(self.invalidate)
         for w in (self.ls,self.ll,self.cutoff): w.valueChanged.connect(self.invalidate)
@@ -126,7 +126,7 @@ class Window(QMainWindow):
         def done(data):
             raw,fit=data; self.result=data; self.export.setEnabled(True); self.plot.draw_result(raw,fit)
             self.statusBar().showMessage(f'有效频点 {sum(raw.valid)}/{len(raw.valid)}；拟合 RMS {fit.rms_db_per_in:.4g} dB/in')
-            self.log.appendPlainText(f'2L 完成；拟合系数 (a,b,c,d,offset)={fit.coefficients}，权重阶数={fit.weight_order}；百分比为相对拟合残差，不是已验证的 PLTS 不确定度')
+            self.log.appendPlainText(f'2L 完成；拟合系数 (a,b,c,d,offset)={fit.coefficients}，权重阶数={fit.weight_order}')
         self.launch(work,done)
     def save_result(self):
         if self.result is None:return
@@ -135,7 +135,7 @@ class Window(QMainWindow):
         r,fit=self.result
         try:
             write_plts(p, r, fit)
-            self.statusBar().showMessage('结果已按 PLTS CSV 列格式导出；横轴数值为 MHz，百分比为拟合残差')
+            self.statusBar().showMessage('结果已按 PLTS 格式导出，横轴数值为 MHz')
         except OSError as e: QMessageBox.warning(self,'导出失败',str(e))
 
     def compare_page(self):
@@ -148,7 +148,7 @@ class Window(QMainWindow):
             unit=QComboBox(); unit.addItems(['MHz','GHz','kHz','Hz']); unit.setToolTip('PLTS 风格 CSV 第一列的实际频率单位；旧版程序 CSV 自动使用 Hz')
             form=QFormLayout(); form.addRow('横轴频率单位',unit); box.addLayout(form)
             self.compare_paths.append(field); self.compare_units.append(unit)
-        note=QLabel('按参考 A 的频点比较，B 在线性插值后相减（B − A），不外推。PLTS 表头 Time(ns) 的真实单位请根据数据确认。程序导出百分比为拟合残差，不等同 PLTS Uncertainty。')
+        note=QLabel('按参考 A 的频点比较，B 在线性插值后相减（B − A），不外推。PLTS 表头 Time(ns) 的真实单位请根据数据确认。旧版程序导出的百分比是单点残差。')
         note.setWordWrap(True); box.addWidget(note)
         self.button('比较两个 CSV',self.run_compare,box)
         self.button('比较参考 A 与当前计算结果',self.compare_current,box)
@@ -167,7 +167,7 @@ class Window(QMainWindow):
             if self.result is None: raise ValueError('请先在 Delta-L 计算页面完成计算')
             a=read_delta_l(self.compare_paths[0].text().strip(),self.compare_units[0].currentText())
             raw,fit=self.result
-            b=DeltaLData(raw.frequency_hz,np.column_stack((raw.loss_db_per_in,fit.fitted_db_per_in,fit.residual_percent)))
+            b=DeltaLData(raw.frequency_hz,np.column_stack((fit.displayed_loss_db_per_in,fit.fitted_db_per_in,fit.uncertainty_percent)))
             self.show_comparison(a,b)
         except (OSError, ValueError) as e: QMessageBox.warning(self,'比较失败',str(e))
     def show_comparison(self,a,b):

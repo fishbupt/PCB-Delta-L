@@ -5,7 +5,7 @@ from pcb_delta_l.comparison import DeltaLData, read_delta_l, write_plts, align
 
 def test_plts_roundtrip_and_undefined_values(tmp_path):
     raw = SimpleNamespace(frequency_hz=np.array([1e9, 2e9]), loss_db_per_in=np.array([.1, .2]))
-    fit = SimpleNamespace(fitted_db_per_in=np.array([.11, np.nan]), residual_percent=np.array([1., np.nan]))
+    fit = SimpleNamespace(fitted_db_per_in=np.array([.11, np.nan]), uncertainty_percent=np.array([1., np.nan]), displayed_loss_db_per_in=raw.loss_db_per_in)
     path = tmp_path / 'data.csv'
     write_plts(path, raw, fit)
     data = read_delta_l(path, 'MHz')
