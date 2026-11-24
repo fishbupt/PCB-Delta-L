@@ -1,4 +1,5 @@
 import csv
+import json
 import sys
 import traceback
 from pathlib import Path
@@ -61,13 +62,43 @@ class Window(QMainWindow):
         b=QPushButton(text); b.clicked.connect(slot); box.addWidget(b); return b
     def sim_page(self):
         s,box,self.simplot=self.split(); self.tabs.addTab(s,'仿真测试件'); form=QFormLayout(); box.addLayout(form)
-        self.start=self.number(.01,.001,1000); self.stop=self.number(40,.002,1000); self.points=QSpinBox(); self.points.setRange(2,MAX_PLTS_POINTS); self.points.setValue(1601)
+        self.start=self.number(.01,0.000000001,1e12,9); self.stop=self.number(40,0.000000001,1e12,9); self.points=QSpinBox(); self.points.setRange(2,MAX_PLTS_POINTS); self.points.setValue(1601)
         self.lengths=QLineEdit('2, 5, 10'); self.z=self.number(95,1,1000); self.er=self.number(3.5,.1,30); self.skin=self.number(.08,0,100,5); self.diel=self.number(.035,0,100,5); self.fz=self.number(85,1,1000); self.fl=self.number(.15,0,10)
-        for label,w in [('起始频率 (GHz)',self.start),('终止频率 (GHz)',self.stop),('频点数',self.points),('线长 (in，逗号分隔)',self.lengths),('差模线阻抗 (Ω)',self.z),('有效介电常数',self.er),('集肤损耗系数',self.skin),('介质损耗系数',self.diel),('引入结构阻抗 (Ω)',self.fz),('单端引入长度 (in)',self.fl)]: form.addRow(label,w)
+        self.preset=QComboBox(); self.preset.addItems(['原有默认','P1 + T1 低反射基准','P2 + T1 失配引入','P1 + T3 长短线阻抗差'])
+        self.length_unit=QComboBox(); self.length_unit.addItems(['in','mm','ft']); self._length_unit='in'
+        self.freq_unit=QComboBox(); self.freq_unit.addItems(['GHz','MHz','Hz']); self._freq_unit='GHz'
+        self.long_z=self.number(97,1,1000)
+        form.addRow('测试样本',self.preset); form.addRow('长度单位',self.length_unit); form.addRow('频率单位',self.freq_unit)
+        for label,w in [('起始频率',self.start),('终止频率',self.stop),('频点数',self.points),('线长（逗号分隔）',self.lengths),('差模线阻抗 (Ω)',self.z),('有效介电常数',self.er),('集肤损耗系数',self.skin),('介质损耗系数',self.diel),('引入结构阻抗 (Ω)',self.fz),('单端引入长度 (in)',self.fl),('最长线差模阻抗 (Ω，P1+T3)',self.long_z)]: form.addRow(label,w)
         note=QLabel('仿真使用均匀传输线和相同引入结构，默认无模式转换。'); note.setWordWrap(True); box.addWidget(note)
         self.button('生成仿真数据',self.run_sim,box); self.sim_save=self.button('导出 S4P 和真值',self.save_sim,box); self.sim_save.setEnabled(False); box.addStretch()
         for w in (self.start,self.stop,self.points,self.z,self.er,self.skin,self.diel,self.fz,self.fl): w.valueChanged.connect(self.invalidate_sim)
         self.lengths.textChanged.connect(self.invalidate_sim)
+        self.long_z.valueChanged.connect(self.invalidate_sim)
+        self.preset.currentIndexChanged.connect(self.apply_sim_preset)
+        self.length_unit.currentTextChanged.connect(self.change_length_unit)
+        self.freq_unit.currentTextChanged.connect(self.change_freq_unit)
+    def apply_sim_preset(self, index):
+        if index == 0: return
+        self.z.setValue(100); self.fz.setValue(60 if index == 2 else 100)
+        self.fl.setValue(.15); self.long_z.setValue(102)
+        self.invalidate_sim()
+    def change_length_unit(self, unit):
+        factors={'in':1.,'mm':1/25.4,'ft':12.}
+        try:
+            values=[float(x.strip()) for x in self.lengths.text().split(',')]
+            values=[v*factors[self._length_unit]/factors[unit] for v in values]
+            self.lengths.setText(', '.join(format(v,'.12g') for v in values))
+            self._length_unit=unit
+        except ValueError:
+            self.length_unit.blockSignals(True); self.length_unit.setCurrentText(self._length_unit); self.length_unit.blockSignals(False)
+            QMessageBox.warning(self,'单位切换失败','请先修正线长输入')
+    def change_freq_unit(self, unit):
+        factors={'GHz':1e9,'MHz':1e6,'Hz':1.}
+        ratio=factors[self._freq_unit]/factors[unit]
+        for control in (self.start,self.stop):
+            control.blockSignals(True); control.setValue(control.value()*ratio); control.blockSignals(False)
+        self._freq_unit=unit; self.invalidate_sim()
     def invalidate_sim(self,*_):
         self.sim=None; self.sim_save.setEnabled(False); self.simplot.fig.clear(); self.simplot.canvas.draw_idle()
     def calc_page(self):
@@ -93,15 +124,15 @@ class Window(QMainWindow):
     def fail(self,detail): self.log.appendPlainText(detail); self.statusBar().showMessage('操作失败'); QMessageBox.warning(self,'操作失败',detail.strip().splitlines()[-1])
     def run_sim(self):
         try:
-            lengths=tuple(float(x.strip()) for x in self.lengths.text().split(',')); start=self.start.value(); stop=self.stop.value()
+            lengths=tuple(float(x.strip())*{'in':1.,'mm':1/25.4,'ft':12.}[self.length_unit.currentText()] for x in self.lengths.text().split(',')); factor={'GHz':1e9,'MHz':1e6,'Hz':1.}[self.freq_unit.currentText()]; start=self.start.value()*factor; stop=self.stop.value()*factor
             if len(lengths)<2 or len(set(lengths))!=len(lengths) or stop<=start: raise ValueError('至少需要两个不同长度，且终止频率必须大于起始频率')
-            f=np.linspace(start*1e9,stop*1e9,self.points.value()); args=(self.z.value(),self.er.value(),self.skin.value(),self.diel.value(),self.fz.value(),self.fl.value())
+            f=np.linspace(start,stop,self.points.value()); args=(self.z.value(),self.er.value(),self.skin.value(),self.diel.value(),self.fz.value(),self.fl.value()); preset=self.preset.currentText(); long_z=self.long_z.value(); zmap={max(lengths):long_z} if self.preset.currentIndex()==3 else {}
         except ValueError as e: QMessageBox.warning(self,'输入错误',str(e)); return
         self.sim=None; self.sim_save.setEnabled(False)
         def work():
-            z,er,skin,diel,fz,fl=args; return generate(f,lengths,z,er,0.01,skin,diel,fz,fl)
+            z,er,skin,diel,fz,fl=args; return generate(f,lengths,z,er,0.01,skin,diel,fz,fl,length_impedances=zmap)
         def done(data):
-            self.sim=data; nets,truth=data; self.simplot.draw(f,[(truth,'True loss','b-')],'Loss (dB/in)'); self.sim_save.setEnabled(True); self.statusBar().showMessage(f'已生成 {len(nets)} 个测试件'); self.log.appendPlainText('仿真生成完成；S4P 端口顺序：输入+、输出+、输入−、输出−')
+            self.sim=data; self.sim_metadata={'preset':preset,'frequency_start_hz':start,'frequency_stop_hz':stop,'points':len(f),'lengths_in':lengths,'line_z_ohm':args[0],'longest_line_z_ohm':long_z if zmap else args[0],'er':args[1],'skin':args[2],'dielectric':args[3],'fixture_z_ohm':args[4],'fixture_length_in':args[5]}; nets,truth=data; self.simplot.draw(f,[(truth,'True loss','b-')],'Loss (dB/in)'); self.sim_save.setEnabled(True); self.statusBar().showMessage(f'已生成 {len(nets)} 个测试件'); self.log.appendPlainText('仿真生成完成；S4P 端口顺序：输入+、输出+、输入−、输出−')
         self.launch(work,done)
     def save_sim(self):
         folder=QFileDialog.getExistingDirectory(self,'选择输出目录')
@@ -110,6 +141,9 @@ class Window(QMainWindow):
         try:
             for length,net in nets.items(): write_s4p(Path(folder)/length_filename(length), net)
             np.savetxt(Path(folder)/'truth.csv',np.column_stack((next(iter(nets.values())).f,truth)),delimiter=',',header='frequency_hz,loss_db_per_in',comments='')
+            from .core import differential_network
+            self.sim_metadata['sdd11_at_stop_db']={str(length):float(20*np.log10(max(abs(differential_network(net).s[-1,0,0]),1e-300))) for length,net in nets.items()}
+            (Path(folder)/'simulation_parameters.json').write_text(json.dumps(self.sim_metadata,ensure_ascii=False,indent=2),encoding='utf-8')
             self.statusBar().showMessage('仿真 S4P 与真值已导出')
         except Exception as e: QMessageBox.warning(self,'导出失败',str(e))
     def run_calc(self):

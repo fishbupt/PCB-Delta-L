@@ -13,14 +13,16 @@ def line_abcd(f, length_in, z, dc, skin, dielectric, er):
     return a,db_per_in
 
 
-def generate(f, lengths=(2.,5.,10.), z_line=95., er=3.5, dc=0.01, skin=0.08, dielectric=0.035, fixture_z=85., fixture_length=0.15):
+def generate(f, lengths=(2.,5.,10.), z_line=95., er=3.5, dc=0.01, skin=0.08, dielectric=0.035, fixture_z=85., fixture_length=0.15, length_impedances=None):
     f=np.asarray(f,float)
     if len(f)<2 or not np.all(np.isfinite(f)) or np.any(f<=0) or np.any(np.diff(f)<=0): raise ValueError('频率须为正且严格递增，至少两个点')
     if not all(np.isfinite(x) and x>=0 for x in (dc,skin,dielectric,fixture_length)) or min(z_line,er,fixture_z)<=0 or any(x<=0 for x in lengths): raise ValueError('长度、阻抗和介电常数须为正，损耗系数须非负')
+    length_impedances = {} if length_impedances is None else dict(length_impedances)
+    if any(not np.isfinite(v) or v <= 0 for v in length_impedances.values()): raise ValueError('各线阻抗必须为正且有限')
     freq=rf.Frequency.from_f(f,unit='hz'); out={}
     fixture,_=line_abcd(f,fixture_length,fixture_z,dc,skin,dielectric,er)
     for length in lengths:
-        line,truth=line_abcd(f,length,z_line,dc,skin,dielectric,er)
+        line,truth=line_abcd(f,length,length_impedances.get(length,z_line),dc,skin,dielectric,er)
         diff=fixture @ line @ fixture
         sd=rf.network.a2s(diff,z0=100)
         # Independent common-mode line. Modal conversion is deliberately zero.
