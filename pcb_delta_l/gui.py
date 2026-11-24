@@ -19,10 +19,32 @@ rcParams["font.sans-serif"] = [name for name in _CJK_FONTS if name in _installed
 rcParams["axes.unicode_minus"] = False
 from .core import extract_2l
 from .fitting import fit_loss
-from .simulation import generate
+from .simulation import StressOptions, StressSamples, generate, generate_stress
 from .touchstone import write_s4p, length_filename, MAX_PLTS_POINTS
 from .comparison import DeltaLData, read_delta_l, write_plts, align
 from .mixed_mode import curves as mixed_curves, write_curve, PARAMETERS
+
+_INCHES_PER_UNIT = {'in': 1., 'mm': 1 / 25.4, 'ft': 12.}
+_GLITCH_FIELDS = ('glitch_ghz', 'glitch_db', 'glitch_phase_deg')
+_STRESS_PRESETS = {
+    '005': ('P3+T1 探针不对称', ('launch_skew_ps',)),
+    '006': ('P4+T1 单点毛刺', _GLITCH_FIELDS),
+    '007': ('P1+T2 高损耗加噪声', ('noise_start_ghz', 'noise_floor_db', 'noise_seed')),
+    '009': ('P1+T3 周期阻抗波动', ('ripple_ohm', 'period_in')),
+    '011': ('P4+T4 偏斜加毛刺', ('skew_ps_per_in', *_GLITCH_FIELDS)),
+}
+_STRESS_FIELDS = {
+    'launch_skew_ps': ('每端 P/N 时延差 (ps)', .001, 100., 3),
+    'glitch_ghz': ('毛刺目标频率 (GHz)', .000000001, 1000., 9),
+    'glitch_db': ('毛刺附加衰减 (dB)', 0., 60., 2),
+    'glitch_phase_deg': ('毛刺附加相位 (°)', -180., 180., 2),
+    'noise_start_ghz': ('噪声起始频率 (GHz)', 0., 1000., 3),
+    'noise_floor_db': ('复噪声 RMS 电平 (dB)', -150., -1., 1),
+    'noise_seed': ('随机种子', 0, 2147483647, 0),
+    'ripple_ohm': ('周期阻抗波动幅度 (Ω)', .001, 999., 3),
+    'period_in': ('阻抗波动周期 (in)', .001, 100., 3),
+    'skew_ps_per_in': ('单位长度 P/N 时延差 (ps/in)', .001, 100., 3),
+}
 
 class Worker(QThread):
     success=pyqtSignal(object); failure=pyqtSignal(str)
@@ -61,21 +83,43 @@ class Window(QMainWindow):
         b=QPushButton(text); b.clicked.connect(slot); box.addWidget(b); return b
     def sim_page(self):
         s,box,self.simplot=self.split(); self.tabs.addTab(s,'仿真测试件'); form=QFormLayout(); box.addLayout(form)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.start=self.number(.01,0.000000001,1e12,9); self.stop=self.number(40,0.000000001,1e12,9); self.points=QSpinBox(); self.points.setRange(2,MAX_PLTS_POINTS); self.points.setValue(1601)
         self.lengths=QLineEdit('2, 5, 10'); self.z=self.number(95,1,1000); self.er=self.number(3.5,.1,30); self.skin=self.number(.08,0,100,5); self.diel=self.number(.035,0,100,5); self.fz=self.number(85,1,1000); self.fl=self.number(.15,0,10)
         self.preset=QComboBox()
+        self.preset.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.preset.setMinimumContentsLength(17)
         self.preset.addItem('原有默认')
         self.preset.addItem('P1 + T1 低反射基准', (100, None))
         self.preset.addItem('P2 + T1 失配引入', (60, None))
         self.preset.addItem('P1 + T3 长短线阻抗差', (100, 102))
         self.preset.addItem('P2 + T3 失配引入 + 长短线阻抗差', (60, 103))
+        for case, (title, _) in _STRESS_PRESETS.items():
+            self.preset.addItem(f'TC-2L-{case} {title}', case)
         self.length_unit=QComboBox(); self.length_unit.addItems(['in','mm','ft']); self._length_unit='in'
         self.freq_unit=QComboBox(); self.freq_unit.addItems(['GHz','MHz','Hz']); self._freq_unit='GHz'
         self.long_z=self.number(102,1,1000)
         self.long_z.setEnabled(False)
         form.addRow('测试样本',self.preset); form.addRow('长度单位',self.length_unit); form.addRow('频率单位',self.freq_unit)
         for label,w in [('起始频率',self.start),('终止频率',self.stop),('频点数',self.points),('线长（逗号分隔）',self.lengths),('差模线阻抗 (Ω)',self.z),('有效介电常数',self.er),('集肤损耗系数',self.skin),('介质损耗系数',self.diel),('引入结构阻抗 (Ω)',self.fz),('单端引入长度 (in)',self.fl),('最长线差模阻抗 (Ω，仅 T3)',self.long_z)]: form.addRow(label,w)
-        note=QLabel('仿真使用均匀传输线和相同引入结构，默认无模式转换。'); note.setWordWrap(True); box.addWidget(note)
+        self.sim_form = form
+        self.stress_controls = {}
+        defaults = StressOptions()
+        for key, (label, low, high, decimals) in _STRESS_FIELDS.items():
+            if key == 'noise_seed':
+                control = QSpinBox()
+                control.setRange(low, high)
+                control.setValue(defaults.noise_seed)
+            else:
+                control = self.number(getattr(defaults, key), low, high, decimals)
+            form.addRow(label, control)
+            form.setRowVisible(control, False)
+            control.valueChanged.connect(self.invalidate_sim)
+            self.stress_controls[key] = control
+        self.sim_note = QLabel('仿真使用均匀传输线和相同引入结构。')
+        self.sim_note.setWordWrap(True)
+        box.addWidget(self.sim_note)
         self.button('生成仿真数据',self.run_sim,box); self.sim_save=self.button('导出 S4P',self.save_sim,box); self.sim_save.setEnabled(False); box.addStretch()
         for w in (self.start,self.stop,self.points,self.z,self.er,self.skin,self.diel,self.fz,self.fl): w.valueChanged.connect(self.invalidate_sim)
         self.lengths.textChanged.connect(self.invalidate_sim)
@@ -85,17 +129,36 @@ class Window(QMainWindow):
         self.freq_unit.currentTextChanged.connect(self.change_freq_unit)
     def apply_sim_preset(self):
         preset = self.preset.currentData()
-        self.long_z.setEnabled(preset is not None and preset[1] is not None)
-        if preset is not None:
+        case = preset if isinstance(preset, str) else None
+        fields = _STRESS_PRESETS[case][1] if case else ()
+        for key, control in self.stress_controls.items():
+            self.sim_form.setRowVisible(control, key in fields)
+        self.sim_form.setRowVisible(self.long_z, case is None)
+        self.long_z.setEnabled(isinstance(preset, tuple) and preset[1] is not None)
+        if case:
+            factor = _INCHES_PER_UNIT[self.length_unit.currentText()]
+            self.lengths.setText(', '.join(format(length / factor, '.12g') for length in (5., 10.)))
+            self.z.setValue(100)
+            self.fz.setValue(100)
+            self.fl.setValue(.15)
+        elif preset is not None:
             fixture_z, longest_z = preset
             self.z.setValue(100)
             self.fz.setValue(fixture_z)
             self.fl.setValue(.15)
             if longest_z is not None:
                 self.long_z.setValue(longest_z)
+        notes = {
+            '005': '长短线共用相同的 P/N 不对称引入。',
+            '006': '仅在最长线最接近目标频率的点注入毛刺。_ref 文件为无毛刺参考。',
+            '007': '材料损耗在 40 GHz 追加 2 dB/in。_ref 文件保留高损耗，且无噪声。',
+            '009': '长短线使用相同幅度、周期和起点相位的阻抗波动。',
+            '011': '偏斜随线长增加，毛刺只加在最长线。_ref 文件保留偏斜，且无毛刺。',
+        }
+        self.sim_note.setText(notes.get(case, '仿真使用均匀传输线和相同引入结构。'))
         self.invalidate_sim()
     def change_length_unit(self, unit):
-        factors={'in':1.,'mm':1/25.4,'ft':12.}
+        factors = _INCHES_PER_UNIT
         try:
             values=[float(x.strip()) for x in self.lengths.text().split(',')]
             values=[v*factors[self._length_unit]/factors[unit] for v in values]
@@ -135,33 +198,51 @@ class Window(QMainWindow):
     def fail(self,detail): self.log.appendPlainText(detail); self.statusBar().showMessage('操作失败'); QMessageBox.warning(self,'操作失败',detail.strip().splitlines()[-1])
     def run_sim(self):
         try:
-            lengths=tuple(float(x.strip())*{'in':1.,'mm':1/25.4,'ft':12.}[self.length_unit.currentText()] for x in self.lengths.text().split(',')); factor={'GHz':1e9,'MHz':1e6,'Hz':1.}[self.freq_unit.currentText()]; start=self.start.value()*factor; stop=self.stop.value()*factor
+            lengths=tuple(float(x.strip())*_INCHES_PER_UNIT[self.length_unit.currentText()] for x in self.lengths.text().split(',')); factor={'GHz':1e9,'MHz':1e6,'Hz':1.}[self.freq_unit.currentText()]; start=self.start.value()*factor; stop=self.stop.value()*factor
             if len(lengths)<2 or len(set(lengths))!=len(lengths) or stop<=start: raise ValueError('至少需要两个不同长度，且终止频率必须大于起始频率')
             f = np.linspace(start, stop, self.points.value())
-            args = (self.z.value(), self.er.value(), self.skin.value(),
-                    self.diel.value(), self.fz.value(), self.fl.value())
             preset = self.preset.currentData()
+            case = preset if isinstance(preset, str) else None
             zmap = {}
-            if preset is not None and preset[1] is not None:
+            if isinstance(preset, tuple) and preset[1] is not None:
                 zmap[max(lengths)] = self.long_z.value()
+            line_options = dict(z_line=self.z.value(), er=self.er.value(),
+                                skin=self.skin.value(), dielectric=self.diel.value(),
+                                fixture_z=self.fz.value(), fixture_length=self.fl.value(),
+                                length_impedances=zmap)
+            if case:
+                fields = _STRESS_PRESETS[case][1]
+                options = StressOptions(**{key: self.stress_controls[key].value() for key in fields})
         except ValueError as e: QMessageBox.warning(self,'输入错误',str(e)); return
         self.sim=None; self.sim_save.setEnabled(False)
         def work():
-            z,er,skin,diel,fz,fl=args; return generate(f,lengths,z,er,0.01,skin,diel,fz,fl,length_impedances=zmap)
+            if case:
+                return generate_stress(f, lengths, case, options, **line_options)
+            networks, truth = generate(f, lengths, **line_options)
+            return StressSamples(networks, {}, truth, [])
         def done(data):
-            self.sim, truth = data
-            self.simplot.draw(f, [(truth, 'True loss', 'b-')], 'Loss (dB/in)')
+            self.sim = data
+            label = 'Material loss' if case else 'True loss'
+            self.simplot.draw(f, [(data.material_loss, label, 'b-')], 'Loss (dB/in)')
             self.sim_save.setEnabled(True)
-            self.statusBar().showMessage(f'已生成 {len(self.sim)} 个测试件')
+            self.statusBar().showMessage(f'已生成 {len(data.networks)} 个测试件、{len(data.reference)} 个参考件'
+                                         if data.reference else f'已生成 {len(data.networks)} 个测试件')
             self.log.appendPlainText('仿真生成完成；S4P 端口顺序：输入+、输出+、输入−、输出−')
+            for note in data.notes:
+                self.log.appendPlainText(f'TC-2L-{case} · {note}')
         self.launch(work,done)
     def save_sim(self):
         folder=QFileDialog.getExistingDirectory(self,'选择输出目录')
         if not folder or self.sim is None:return
         try:
-            for length, net in self.sim.items():
-                write_s4p(Path(folder) / length_filename(length), net)
-            self.statusBar().showMessage(f'已导出 {len(self.sim)} 个 S4P 文件')
+            preset = self.preset.currentData()
+            prefix = f'tc_2l_{preset}_' if isinstance(preset, str) else ''
+            for networks, suffix in ((self.sim.networks, ''), (self.sim.reference, '_ref')):
+                for length, net in networks.items():
+                    filename = f'{prefix}{Path(length_filename(length)).stem}{suffix}.s4p'
+                    write_s4p(Path(folder) / filename, net)
+            count = len(self.sim.networks) + len(self.sim.reference)
+            self.statusBar().showMessage(f'已导出 {count} 个 S4P 文件')
         except Exception as e: QMessageBox.warning(self,'导出失败',str(e))
     def run_calc(self):
         try:
