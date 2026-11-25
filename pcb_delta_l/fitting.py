@@ -51,13 +51,20 @@ def _local_uncertainty(frequency_hz, loss, fitted, valid):
     return uncertainty
 
 
-def fit_loss(frequency_hz, loss_db_per_in, valid=None, cutoff_hz=None, weight_order=0):
+def fit_loss(frequency_hz, loss_db_per_in, valid=None, cutoff_hz=None, weight_order=0, *, exponent=None):
+    """Fit the loss and calculate uncertainty from the same fitted curve.
+
+    An explicit exponent fixes b while the remaining coefficients are fitted
+    with the requested weights. None searches the default exponent grid.
+    """
     f = np.asarray(frequency_hz, dtype=float)
     y = np.asarray(loss_db_per_in, dtype=float)
     if f.ndim != 1 or y.shape != f.shape or not np.all(np.isfinite(f)) or np.any(np.diff(f) <= 0):
         raise ValueError('频率必须有限、严格递增，且与损耗数组长度一致')
     if weight_order not in (0, 3):
         raise ValueError('拟合权重阶数仅支持 0 或 3')
+    if exponent is not None and not 0 < exponent < 1:
+        raise ValueError('固定拟合指数 b 必须大于 0 且小于 1')
     if cutoff_hz is not None and (not np.isfinite(cutoff_hz) or cutoff_hz <= 0):
         raise ValueError('拟合截止频率必须为正')
     mask = np.isfinite(y)
@@ -83,7 +90,8 @@ def fit_loss(frequency_hz, loss_db_per_in, valid=None, cutoff_hz=None, weight_or
     weighted_target = target * root_weight
     best_cost = np.inf
     coefficients = None
-    for b in _EXPONENTS:
+    exponents = _EXPONENTS if exponent is None else (exponent,)
+    for b in exponents:
         basis = np.column_stack((fit_x**b, fit_x**2, fit_x))
         weighted_basis = basis * root_weight[:, None]
         params, _, rank, _ = np.linalg.lstsq(weighted_basis, weighted_target, rcond=None)

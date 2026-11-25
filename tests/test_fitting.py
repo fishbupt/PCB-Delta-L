@@ -5,7 +5,7 @@ from skrf import Network
 from pcb_delta_l.comparison import read_delta_l, write_plts
 from pcb_delta_l.core import extract_2l
 from pcb_delta_l.fitting import fit_loss
-from pcb_delta_l.simulation import generate
+from pcb_delta_l.simulation import generate, generate_stress
 from pcb_delta_l.touchstone import write_s4p
 
 
@@ -44,6 +44,12 @@ def test_insufficient_points_and_zero_denominator():
     assert np.isnan(result.uncertainty_percent).all()
 
 
+@pytest.mark.parametrize('exponent', [0, 1, np.nan, np.inf])
+def test_fixed_exponent_must_be_between_zero_and_one(exponent):
+    with pytest.raises(ValueError, match='固定拟合指数'):
+        fit_loss(np.arange(10.), np.ones(10), exponent=exponent)
+
+
 @pytest.mark.parametrize('short_in,long_in', [(5, 10), (2, 5)])
 def test_default_simulation_reproduces_plts_export(tmp_path, short_in, long_in):
     f = np.linspace(1e7, 40e9, 1601)
@@ -78,6 +84,38 @@ def test_default_simulation_reproduces_plts_export(tmp_path, short_in, long_in):
     assert fit.coefficients[1] == .55
     np.testing.assert_allclose(exported.frequency_hz, f, atol=1e-3, rtol=0)
     assert exported.values[1, 0] == pytest.approx(.025411, abs=5e-7)
+    np.testing.assert_allclose(exported.values[points, 1], expected_fit, atol=1e-9, rtol=0)
+    np.testing.assert_allclose(exported.values[points, 2], expected_uncertainty, atol=1e-7, rtol=0)
+    assert not np.count_nonzero(exported.values[:40, 2])
+    assert not np.count_nonzero(exported.values[1561:, 2])
+
+
+def test_tc_2l_007_fixed_exponent_matches_plts(tmp_path):
+    f = np.linspace(1e7, 40e9, 1601)
+    samples = generate_stress(f, (5, 10), '007', z_line=100, fixture_z=100)
+    short_path = tmp_path / 'short.s4p'
+    long_path = tmp_path / 'long.s4p'
+    write_s4p(short_path, samples.networks[5])
+    write_s4p(long_path, samples.networks[10])
+    raw = extract_2l(Network(str(short_path)), Network(str(long_path)), 5, 10)
+    fit = fit_loss(raw.frequency_hz, raw.loss_db_per_in, raw.valid, exponent=0.540625)
+    path = tmp_path / 'delta_l.csv'
+    write_plts(path, raw, fit)
+    exported = read_delta_l(path)
+
+    # PLTS rows cover the displayed second point, the first complete window,
+    # the low-frequency deviation, the noise band and the upper window edge.
+    points = [1, 40, 43, 1200, 1558, 1560, 1561, 1600]
+    expected_fit = [
+        0.029140065733862, 0.176402910330183, 0.185635728096272,
+        2.996965022096072, 3.815655871972433, 3.820204924673363,
+        3.822479359103224, 3.911135050365190,
+    ]
+    expected_uncertainty = [
+        0, 1.761817576393709, 1.496853624562001, 1.972468781008116,
+        4.973910515044153, 5.162013572475937, 0, 0,
+    ]
+    assert fit.coefficients[1] == 0.540625
     np.testing.assert_allclose(exported.values[points, 1], expected_fit, atol=1e-9, rtol=0)
     np.testing.assert_allclose(exported.values[points, 2], expected_uncertainty, atol=1e-7, rtol=0)
     assert not np.count_nonzero(exported.values[:40, 2])

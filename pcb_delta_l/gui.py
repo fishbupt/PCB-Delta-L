@@ -183,10 +183,17 @@ class Window(QMainWindow):
         f.addRow('短线长度 (in)',self.ls); f.addRow('长线长度 (in)',self.ll); f.addRow('端口：输入+、输出+、输入−、输出−',self.ports)
         self.cutoff=self.number(0,0,1000); self.cutoff.setSpecialValueText('全频段'); self.weight=QComboBox(); self.weight.addItem('0 · 均匀权重',0); self.weight.addItem('3 · 低频加权',3)
         f.addRow('拟合截止频率 (GHz)',self.cutoff); f.addRow('拟合权重阶数',self.weight)
+        self.fit_exponent = QDoubleSpinBox()
+        self.fit_exponent.setDecimals(6)
+        self.fit_exponent.setRange(0, 0.999999)
+        self.fit_exponent.setSingleStep(0.01)
+        self.fit_exponent.setSpecialValueText('自动')
+        self.fit_exponent.setToolTip('输入对照样本的已知指数。TC-2L-007 使用 0.540625。')
+        f.addRow('拟合指数 b', self.fit_exponent)
         note=QLabel('频率网格须一致。Uncertainty 使用 ±1 GHz 残差窗口。频带边缘缺少完整窗口时显示 0。'); note.setWordWrap(True); box.addWidget(note)
         self.button('计算 2L',self.run_calc,box); self.export=self.button('导出计算结果 CSV',self.save_result,box); self.export.setEnabled(False); box.addStretch()
         for w in (self.short,self.long,self.ports): w.textChanged.connect(self.invalidate)
-        for w in (self.ls,self.ll,self.cutoff): w.valueChanged.connect(self.invalidate)
+        for w in (self.ls,self.ll,self.cutoff,self.fit_exponent): w.valueChanged.connect(self.invalidate)
         self.weight.currentIndexChanged.connect(self.invalidate)
     def invalidate(self,*_): self.result=None; self.export.setEnabled(False); self.plot.fig.clear(); self.plot.canvas.draw_idle()
     def browse(self,field):
@@ -249,11 +256,12 @@ class Window(QMainWindow):
             paths=(self.short.text().strip(),self.long.text().strip()); ports=tuple(int(x.strip()) for x in self.ports.text().split(',')); ls=self.ls.value(); ll=self.ll.value()
             if not all(paths): raise ValueError('请选择长线和短线文件')
             cutoff=self.cutoff.value()*1e9 or None; weight=self.weight.currentData()
+            exponent = self.fit_exponent.value() or None
         except ValueError as e: QMessageBox.warning(self,'输入错误',str(e)); return
         self.invalidate()
         def work():
             raw=extract_2l(rf.Network(paths[0]),rf.Network(paths[1]),ls,ll,ports)
-            fit=fit_loss(raw.frequency_hz,raw.loss_db_per_in,raw.valid,cutoff,weight)
+            fit=fit_loss(raw.frequency_hz,raw.loss_db_per_in,raw.valid,cutoff,weight,exponent=exponent)
             return raw,fit
         def done(data):
             raw,fit=data; self.result=data; self.export.setEnabled(True); self.plot.draw_result(raw,fit)
